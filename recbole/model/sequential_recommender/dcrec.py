@@ -173,6 +173,9 @@ class DCRec(SequentialRecommender):
         self.item_simgraph = external_data["sim_graph"].to(self.device)
         self.graph_dropout = config["graph_dropout_prob"]
 
+        self.adj_graph_test = external_data["adj_graph_test"].to(self.device)
+        self.sim_graph_test = external_data["sim_graph_test"].to(self.device)
+
         self.gcn = GCN(self.hidden_size, self.hidden_size, self.graph_dropout)
 
         self.layernorm = nn.LayerNorm(
@@ -391,10 +394,10 @@ class DCRec(SequentialRecommender):
             last_items_flatten = torch.gather(
                 item_seq, 1, (item_seq_len - 1).unsqueeze(1)).squeeze()
             # graph view
-            masked_g = self.item_adjgraph
+            masked_g = self.adj_graph_test
             iadj_graph_output_raw = self.gcn_forward(masked_g)
             iadj_graph_output_seq = iadj_graph_output_raw[last_items_flatten]
-            isim_graph_output_seq = self.gcn_forward(self.item_simgraph)[
+            isim_graph_output_seq = self.gcn_forward(self.sim_graph_test)[
                 last_items_flatten]
             # 3, N_mask, dim
             mixed_x = torch.stack(
@@ -410,57 +413,6 @@ class DCRec(SequentialRecommender):
             1), test_item_emb.transpose(1, 2)).squeeze()
         return scores
 
-    def fast_predict_with_conformity_weights(self, interaction):
-        user_ids = interaction[self.USER_ID]
-        item_seq = interaction[self.ITEM_SEQ]
-        item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        test_item = interaction["item_id_with_negs"]
-        seq_output = self.forward(item_seq, item_seq_len)
-
-        last_items_flatten = torch.gather(
-            item_seq, 1, (item_seq_len - 1).unsqueeze(1)).squeeze()
-        # graph view
-        masked_g = self.item_adjgraph
-        iadj_graph_output_raw = self.gcn_forward(masked_g)
-        iadj_graph_output_seq = iadj_graph_output_raw[last_items_flatten]
-        isim_graph_output_seq = self.gcn_forward(self.item_simgraph)[
-            last_items_flatten]
-
-        last_items_indices = torch.tensor([i*self.max_seq_length+j for i, j in enumerate(
-            item_seq_len - 1)], dtype=torch.long, device=item_seq.device).view(-1)
-        # only the last one
-        last_items_flatten = item_seq.view(-1)[last_items_indices]
-        valid_items_flatten = last_items_flatten
-        valid_items_indices = last_items_indices
-
-        masked_g = self.item_adjgraph
-        aug_g = graph_augment(self.item_adjgraph, user_ids, self.user_edges)
-        iadj_graph_output_raw = self.gcn_forward(masked_g)
-        isim_graph_output_raw = self.gcn_forward(self.item_simgraph)
-        iadj_graph_output_seq = iadj_graph_output_raw[valid_items_flatten]
-        isim_graph_output_seq = isim_graph_output_raw[valid_items_flatten]
-
-        # CL weights from augmentation
-        mainstream_weights = self._subgraph_agreement(
-            aug_g, iadj_graph_output_raw, iadj_graph_output_seq, valid_items_flatten)
-        # filtering those len=1, set weight=0.5
-        mainstream_weights[item_seq_len == 1] = 0.5
-
-        # 3, N_mask, dim
-        mixed_x = torch.stack(
-            (seq_output, iadj_graph_output_seq, isim_graph_output_seq), dim=0)
-        weights = (torch.matmul(
-            mixed_x, self.attn_weights.unsqueeze(0))*self.attn).sum(-1)
-        # 3, N_mask, 1
-        score = F.softmax(weights, dim=0).unsqueeze(-1)
-        seq_output = (mixed_x*score).sum(0)
-
-
-        test_item_emb = self.item_embedding(test_item)  # [B, num, H]
-        scores = torch.matmul(seq_output.unsqueeze(
-            1), test_item_emb.transpose(1, 2)).squeeze()
-        return scores, mainstream_weights
-    
     def get_fused_emb(self):
         item_emb = self.item_embedding.weight
         adj_graph_emb = self.gcn_forward(self.item_adjgraph)

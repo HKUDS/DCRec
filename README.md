@@ -13,7 +13,7 @@ This is the PyTorch implementation for our paper **Debiased Contrastive Learning
                Xia, Lianghao and
                Huang, Chunzhen and
                Luo, Da and
-               Lin Kangyi},
+               Lin, Kangyi},
   title     = {Debiased Contrastive Learning for Sequential Recommendation},
   booktitle = {Proceedings of the ACM Web Conference 2023},
   year      = {2023},
@@ -49,13 +49,13 @@ You can find the original data in these links:
 
 On Reddit dataset:
 
-`python run_DCRec.py --dataset reddit `
+`python run_DCRec.py --dataset=reddit `
 
 For other datasets, simply replace "reddit" with the dataset name.
 
 For other baseline models implemented in RecBole, run:
 
-`python run_sequential.py --dataset [dataset_name] --model [model_name]`
+`python run_sequential.py --dataset=[dataset_name] --model=[model_name]`
 
 ### Hyperparameters
 Best hyperparameter settings are set in `run_DCRec.py`, from line 243 `# BEST SETTINGS`.

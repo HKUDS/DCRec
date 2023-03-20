@@ -18,14 +18,17 @@ from recbole.data import create_dataset
 from recbole.data.utils import get_dataloader, create_samplers
 from recbole.utils import init_logger, init_seed, get_model, get_trainer, set_color
 from recbole.data.interaction import Interaction
-
+import torch
 # torch.autograd.set_detect_anomaly(True)
 
-def build_adj_graph(dataset):
+def build_adj_graph(dataset, phase="train"):
     import dgl
-    graph_file = dataset.config['data_path']+"/adj_graph.bin"
+    graph_file = dataset.config['data_path']+f"/adj_graph_{phase}.bin"
     user_edges_file = dataset.config['data_path']+"/user_edges.pkl.zip"
     try:
+        if phase == "test":
+            g = dgl.load_graphs(graph_file, [0])
+            return g[0][0], None
         g = dgl.load_graphs(graph_file, [0])
         user_edges = pd.read_pickle(user_edges_file)
         print("loading graph from DGL binary file...")
@@ -54,12 +57,12 @@ def build_adj_graph(dataset):
                     item_edges_a.append(item_seq[i])
                     item_edges_b.append(item_seq[i+1])
 
-            item_adj_dict[item_seq[-1]].append(last_item)
-            item_adj_dict[last_item].append(item_seq[-1])
-            item_edges_a.append(item_seq[-1])
-            item_edges_b.append(last_item)
+            # item_adj_dict[item_seq[-1]].append(last_item)
+            # item_adj_dict[last_item].append(item_seq[-1])
+            # item_edges_a.append(item_seq[-1])
+            # item_edges_b.append(last_item)
 
-            item_edges_of_user[uid] = (np.asarray(item_edges_a), np.asarray(item_edges_b))
+            item_edges_of_user[uid] = (np.asarray(item_edges_a, dtype=np.int64), np.asarray(item_edges_b, dtype=np.int64))
         item_edges_of_user = pd.DataFrame.from_dict(item_edges_of_user, orient='index', columns=['item_edges_a', 'item_edges_b'])
         item_edges_of_user.to_pickle(user_edges_file)
         cols = []
@@ -86,15 +89,15 @@ def build_adj_graph(dataset):
         norm_adj = norm_adj.dot(d_mat)
         norm_adj = norm_adj.tocsr()
 
-        g = dgl.from_scipy(norm_adj, 'w')
+        g = dgl.from_scipy(norm_adj, 'w', idtype=torch.int64)
         g.edata['w'] = g.edata['w'].float()
         print("saving DGL graph to binary file...")
         dgl.save_graphs(graph_file, [g])
         return g, item_edges_of_user
 
-def build_sim_graph(dataset, k):
+def build_sim_graph(dataset, k, phase="train"):
     import dgl
-    graph_file = dataset.config['data_path']+f"/sim_graph_g{k}.bin"
+    graph_file = dataset.config['data_path']+f"/sim_graph_g{k}_{phase}.bin"
     try:
         g = dgl.load_graphs(graph_file, [0])
         print("loading isim graph from DGL binary file...")
@@ -242,31 +245,34 @@ if __name__ == '__main__':
     }
     # BEST SETTINGS
     if args.dataset == "reddit":
-        config_dict["train_batch_size"] = 256
+        config_dict["train_batch_size"] = 128
 
         config_dict["graphcl_coefficient"] = 1
 
-        config_dict["weight_mean"] = 0.6
+        config_dict["weight_mean"] = 0.5
         config_dict["sim_group"] = 4
         config_dict["kl_weight"] = 1
 
-    elif args.dataset == "beauty" or args.dataset == "sports":
+    elif args.dataset == "beauty" or args.dataset == "sports" or args.dataset == "ml-20m":
         config_dict["graphcl_coefficient"] = 1e-1
         config_dict["graph_dropout_prob"] = 0.5
         config_dict["hidden_dropout_prob"]= 0.5
         config_dict["attn_dropout_prob"]  = 0.5
         config_dict["kl_weight"] = 1e-2
+        config_dict['train_batch_size'] = 512
 
         if args.dataset == "beauty":
-            config_dict['train_batch_size'] = 256
             config_dict["sim_group"] = 4
-            config_dict["weight_mean"] = 0.6
-            config_dict["cl_temp"] = 0.6
+            config_dict["weight_mean"] = 0.5
+            config_dict["cl_temp"] = 1
         elif args.dataset == "sports":
-            config_dict['train_batch_size'] = 64
             config_dict["sim_group"] = 4
-            config_dict["weight_mean"] = 0.6
-            config_dict["cl_temp"] = 0.2
+            config_dict["weight_mean"] = 0.5
+            config_dict["cl_temp"] = 1
+        elif args.dataset == "ml-20m":
+            config_dict["sim_group"] = 4
+            config_dict["weight_mean"] = 0.4
+            config_dict["cl_temp"] = 0.8
     
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
     config = Config(model=args.model, dataset=f'{args.dataset}', config_dict=config_dict)
@@ -301,7 +307,9 @@ if __name__ == '__main__':
         # dataset splitting
         train_dataset, test_dataset = dataset.build()
         adj_graph, user_edges = build_adj_graph(train_dataset)
+        adj_graph_test, _ = build_adj_graph(test_dataset, "test")
         sim_graph = build_sim_graph(train_dataset, config_dict["sim_group"])
+        sim_graph_test = build_sim_graph(test_dataset, config_dict["sim_group"], "test")
         sequential_augmentation(train_dataset)
         train_sampler, _, test_sampler = create_samplers(config, dataset, [train_dataset, test_dataset])
         if args.validation:
@@ -317,7 +325,9 @@ if __name__ == '__main__':
         external_data = {
             "adj_graph": adj_graph,
             "sim_graph": sim_graph,
-            "user_edges": user_edges
+            "user_edges": user_edges,
+            "adj_graph_test": adj_graph_test,
+            "sim_graph_test": sim_graph_test
         }
         model = get_model(config['model'])(config, train_data.dataset, external_data).to(config['device'])
         logger.info(model)
