@@ -57,5 +57,10 @@ For other baseline models implemented in RecBole, run:
 
 `python run_sequential.py --dataset=[dataset_name] --model=[model_name]`
 
+If you are using the implementation in [SSLRec](https://github.com/HKUDS/SSLRec), use:
+
+`python main.py --model DCRec_seq`
+
+to run DCRec on ml-20m dataset.
 ### Hyperparameters
 Best hyperparameter settings are set in `run_DCRec.py`, from line 243 `# BEST SETTINGS`.

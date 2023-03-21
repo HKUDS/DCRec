@@ -16,3 +16,6 @@ wandb/*
 *.DS_Store
 *.bin
 *.zip
+
+log
+log_tensorboard
