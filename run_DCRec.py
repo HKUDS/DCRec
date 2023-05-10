@@ -23,137 +23,131 @@ import torch
 
 def build_adj_graph(dataset, phase="train"):
     import dgl
-    graph_file = dataset.config['data_path']+f"/adj_graph_{phase}.bin"
-    user_edges_file = dataset.config['data_path']+"/user_edges.pkl.zip"
-    try:
-        if phase == "test":
-            g = dgl.load_graphs(graph_file, [0])
-            return g[0][0], None
-        g = dgl.load_graphs(graph_file, [0])
-        user_edges = pd.read_pickle(user_edges_file)
-        print("loading graph from DGL binary file...")
-        return g[0][0], user_edges
-    except:
-        print("constructing DGL graph...")
-        item_adj_dict = defaultdict(list)
-        item_edges_of_user = dict()
-        inter_feat = dataset.inter_feat
-        for line in range(len(inter_feat)):
-            item_edges_a, item_edges_b = [], []
-            uid = inter_feat[dataset.uid_field][line].item()
-            item_seq = inter_feat[dataset.item_id_list_field][line].tolist()
-            seq_len = inter_feat[dataset.item_list_length_field][line].item()
-            item_seq = item_seq[:seq_len]
-            last_item = inter_feat[dataset.iid_field][line].item()
-            for i in range(seq_len):
-                if i > 0:
-                    item_adj_dict[item_seq[i]].append(item_seq[i-1])
-                    item_adj_dict[item_seq[i-1]].append(item_seq[i])
-                    item_edges_a.append(item_seq[i])
-                    item_edges_b.append(item_seq[i-1])
-                if i+1 < seq_len:
-                    item_adj_dict[item_seq[i]].append(item_seq[i+1])
-                    item_adj_dict[item_seq[i+1]].append(item_seq[i])
-                    item_edges_a.append(item_seq[i])
-                    item_edges_b.append(item_seq[i+1])
+    # graph_file = dataset.config['data_path']+f"/adj_graph_{phase}.bin"
+    # user_edges_file = dataset.config['data_path']+"/user_edges.pkl.zip"
+    # try:
+    #     if phase == "test":
+    #         g = dgl.load_graphs(graph_file, [0])
+    #         return g[0][0], None
+    #     g = dgl.load_graphs(graph_file, [0])
+    #     user_edges = pd.read_pickle(user_edges_file)
+    #     print("loading graph from DGL binary file...")
+    #     return g[0][0], user_edges
+    # except:
+    print("constructing DGL graph...")
+    item_adj_dict = defaultdict(list)
+    item_edges_of_user = dict()
+    inter_feat = dataset.inter_feat
+    for line in range(len(inter_feat)):
+        item_edges_a, item_edges_b = [], []
+        uid = inter_feat[dataset.uid_field][line].item()
+        item_seq = inter_feat[dataset.item_id_list_field][line].tolist()
+        seq_len = inter_feat[dataset.item_list_length_field][line].item()
+        item_seq = item_seq[:seq_len]
+        for i in range(seq_len):
+            if i > 0:
+                item_adj_dict[item_seq[i]].append(item_seq[i-1])
+                item_adj_dict[item_seq[i-1]].append(item_seq[i])
+                item_edges_a.append(item_seq[i])
+                item_edges_b.append(item_seq[i-1])
+            if i+1 < seq_len:
+                item_adj_dict[item_seq[i]].append(item_seq[i+1])
+                item_adj_dict[item_seq[i+1]].append(item_seq[i])
+                item_edges_a.append(item_seq[i])
+                item_edges_b.append(item_seq[i+1])
 
-            # item_adj_dict[item_seq[-1]].append(last_item)
-            # item_adj_dict[last_item].append(item_seq[-1])
-            # item_edges_a.append(item_seq[-1])
-            # item_edges_b.append(last_item)
+        item_edges_of_user[uid] = (np.asarray(item_edges_a, dtype=np.int64), np.asarray(item_edges_b, dtype=np.int64))
+    item_edges_of_user = pd.DataFrame.from_dict(item_edges_of_user, orient='index', columns=['item_edges_a', 'item_edges_b'])
+    # item_edges_of_user.to_pickle(user_edges_file)
+    cols = []
+    rows = []
+    values = []
+    for item in item_adj_dict:
+        adj = item_adj_dict[item]
+        adj_count = Counter(adj)
 
-            item_edges_of_user[uid] = (np.asarray(item_edges_a, dtype=np.int64), np.asarray(item_edges_b, dtype=np.int64))
-        item_edges_of_user = pd.DataFrame.from_dict(item_edges_of_user, orient='index', columns=['item_edges_a', 'item_edges_b'])
-        item_edges_of_user.to_pickle(user_edges_file)
-        cols = []
-        rows = []
-        values = []
-        for item in item_adj_dict:
-            adj = item_adj_dict[item]
-            adj_count = Counter(adj)
+        rows.extend([item]*len(adj_count))
+        cols.extend(adj_count.keys())
+        values.extend(adj_count.values())
 
-            rows.extend([item]*len(adj_count))
-            cols.extend(adj_count.keys())
-            values.extend(adj_count.values())
+    adj_mat = csr_matrix((values, (rows, cols)), shape=(
+        dataset.item_num + 1, dataset.item_num + 1))
+    adj_mat = adj_mat.tolil()
+    adj_mat.setdiag(np.ones((dataset.item_num + 1,)))
+    rowsum = np.array(adj_mat.sum(axis=1))
+    d_inv = np.power(rowsum, -0.5).flatten()
+    d_inv[np.isinf(d_inv)] = 0.
+    d_mat = sp.diags(d_inv)
 
-        adj_mat = csr_matrix((values, (rows, cols)), shape=(
-            dataset.item_num + 1, dataset.item_num + 1))
-        adj_mat = adj_mat.tolil()
-        adj_mat.setdiag(np.ones((dataset.item_num + 1,)))
-        rowsum = np.array(adj_mat.sum(axis=1))
-        d_inv = np.power(rowsum, -0.5).flatten()
-        d_inv[np.isinf(d_inv)] = 0.
-        d_mat = sp.diags(d_inv)
+    norm_adj = d_mat.dot(adj_mat)
+    norm_adj = norm_adj.dot(d_mat)
+    norm_adj = norm_adj.tocsr()
 
-        norm_adj = d_mat.dot(adj_mat)
-        norm_adj = norm_adj.dot(d_mat)
-        norm_adj = norm_adj.tocsr()
-
-        g = dgl.from_scipy(norm_adj, 'w', idtype=torch.int64)
-        g.edata['w'] = g.edata['w'].float()
-        print("saving DGL graph to binary file...")
-        dgl.save_graphs(graph_file, [g])
-        return g, item_edges_of_user
+    g = dgl.from_scipy(norm_adj, 'w', idtype=torch.int64)
+    g.edata['w'] = g.edata['w'].float()
+    # print("saving DGL graph to binary file...")
+    # dgl.save_graphs(graph_file, [g])
+    return g, item_edges_of_user
 
 def build_sim_graph(dataset, k, phase="train"):
     import dgl
-    graph_file = dataset.config['data_path']+f"/sim_graph_g{k}_{phase}.bin"
-    try:
-        g = dgl.load_graphs(graph_file, [0])
-        print("loading isim graph from DGL binary file...")
-        return g[0][0]
-    except:
-        print("building isim graph...")
-        row = []
-        col = []
-        inter_feat = dataset.inter_feat
-        for line in range(len(dataset.inter_feat)):
-            uid = inter_feat[dataset.uid_field][line].item()
-            item_seq = inter_feat[dataset.item_id_list_field][line].tolist()
-            seq_len = inter_feat[dataset.item_list_length_field][line].item()
-            item_seq = item_seq[:seq_len]
-            col.extend(item_seq)
-            row.extend([uid]*seq_len)
-        row = np.array(row)
-        col = np.array(col)
-        # n_users, n_items
-        cf_graph = csr_matrix(([1]*len(row), (row, col)), shape=(
-            dataset.user_num+1, dataset.item_num+1), dtype=np.float32)
-        similarity = cosine_similarity(cf_graph.transpose())
-        # filter topk connections
-        sim_items_slices = []
-        sim_weights_slices = []
-        i = 0
-        while i < similarity.shape[0]:
-            similarity = similarity[i:, :]
-            sim = similarity[:256, :]
-            sim_items = np.argpartition(sim, -(k+1), axis=1)[:, -(k+1):]
-            sim_weights = np.take_along_axis(sim, sim_items, axis=1)
-            sim_items_slices.append(sim_items)
-            sim_weights_slices.append(sim_weights)
-            i = i + 256
-        sim = similarity[256:, :]
+    # graph_file = dataset.config['data_path']+f"/sim_graph_g{k}_{phase}.bin"
+    # try:
+    #     g = dgl.load_graphs(graph_file, [0])
+    #     print("loading isim graph from DGL binary file...")
+    #     return g[0][0]
+    # except:
+    print("building isim graph...")
+    row = []
+    col = []
+    inter_feat = dataset.inter_feat
+    for line in range(len(dataset.inter_feat)):
+        uid = inter_feat[dataset.uid_field][line].item()
+        item_seq = inter_feat[dataset.item_id_list_field][line].tolist()
+        seq_len = inter_feat[dataset.item_list_length_field][line].item()
+        item_seq = item_seq[:seq_len]
+        col.extend(item_seq)
+        row.extend([uid]*seq_len)
+    row = np.array(row)
+    col = np.array(col)
+    # n_users, n_items
+    cf_graph = csr_matrix(([1]*len(row), (row, col)), shape=(
+        dataset.user_num+1, dataset.item_num+1), dtype=np.float32)
+    similarity = cosine_similarity(cf_graph.transpose())
+    # filter topk connections
+    sim_items_slices = []
+    sim_weights_slices = []
+    i = 0
+    while i < similarity.shape[0]:
+        similarity = similarity[i:, :]
+        sim = similarity[:256, :]
         sim_items = np.argpartition(sim, -(k+1), axis=1)[:, -(k+1):]
         sim_weights = np.take_along_axis(sim, sim_items, axis=1)
         sim_items_slices.append(sim_items)
         sim_weights_slices.append(sim_weights)
+        i = i + 256
+    sim = similarity[256:, :]
+    sim_items = np.argpartition(sim, -(k+1), axis=1)[:, -(k+1):]
+    sim_weights = np.take_along_axis(sim, sim_items, axis=1)
+    sim_items_slices.append(sim_items)
+    sim_weights_slices.append(sim_weights)
 
-        sim_items = np.concatenate(sim_items_slices, axis=0)
-        sim_weights = np.concatenate(sim_weights_slices, axis=0)
-        row = []
-        col = []
-        for i in range(len(sim_items)):
-            row.extend([i]*len(sim_items[i]))
-            col.extend(sim_items[i])
-        values = sim_weights / sim_weights.sum(axis=1, keepdims=True)
-        values = np.nan_to_num(values).flatten()
-        adj_mat = csr_matrix((values, (row, col)), shape=(
-            dataset.item_num + 1, dataset.item_num + 1))
-        g = dgl.from_scipy(adj_mat, 'w')
-        g.edata['w'] = g.edata['w'].float()
-        print("saving isim graph to binary file...")
-        dgl.save_graphs(graph_file, [g])
-        return g
+    sim_items = np.concatenate(sim_items_slices, axis=0)
+    sim_weights = np.concatenate(sim_weights_slices, axis=0)
+    row = []
+    col = []
+    for i in range(len(sim_items)):
+        row.extend([i]*len(sim_items[i]))
+        col.extend(sim_items[i])
+    values = sim_weights / sim_weights.sum(axis=1, keepdims=True)
+    values = np.nan_to_num(values).flatten()
+    adj_mat = csr_matrix((values, (row, col)), shape=(
+        dataset.item_num + 1, dataset.item_num + 1))
+    g = dgl.from_scipy(adj_mat, 'w')
+    g.edata['w'] = g.edata['w'].float()
+    # print("saving isim graph to binary file...")
+    # dgl.save_graphs(graph_file, [g])
+    return g
 
 def sequential_augmentation(dataset):
     import torch
@@ -262,6 +256,8 @@ if __name__ == '__main__':
         config_dict['train_batch_size'] = 512
 
         if args.dataset == "beauty":
+            config_dict["attn_dropout_prob"]  = 0.1
+            config_dict['train_batch_size'] = 2048
             config_dict["sim_group"] = 4
             config_dict["weight_mean"] = 0.5
             config_dict["cl_temp"] = 1

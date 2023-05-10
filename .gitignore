@@ -19,3 +19,4 @@ wandb/*
 
 log
 log_tensorboard
+tuner.py
