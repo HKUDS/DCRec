@@ -262,6 +262,7 @@ if __name__ == '__main__':
             config_dict["weight_mean"] = 0.5
             config_dict["cl_temp"] = 1
         elif args.dataset == "sports":
+            config_dict["attn_dropout_prob"]  = 0.3
             config_dict["sim_group"] = 4
             config_dict["weight_mean"] = 0.5
             config_dict["cl_temp"] = 1
