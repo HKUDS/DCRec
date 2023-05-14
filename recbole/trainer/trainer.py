@@ -111,6 +111,9 @@ class Trainer(AbstractTrainer):
         self.best_valid_result = None
         self.train_loss_dict = dict()
         self.optimizer = self._build_optimizer(self.model.parameters())
+        if 'schedule_step' in config:
+            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=config['schedule_step'], gamma=0.2)
+
         self.eval_type = config['eval_type']
         self.eval_collector = Collector(config)
         self.evaluator = Evaluator(config)
@@ -162,8 +165,6 @@ class Trainer(AbstractTrainer):
             tuple which includes the sum of loss in each part.
         """
         self.model.train()
-        # 每个epoch都清零global encoding
-        # nn.init.zeros_(self.model.global_encodings)
         loss_func = loss_func or self.model.calculate_loss
         total_loss = None
         iter_data = (
@@ -386,6 +387,9 @@ class Trainer(AbstractTrainer):
                     break
 
                 valid_step+=1
+
+            if hasattr(self, 'scheduler'):
+                self.scheduler.step()
 
         # self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result

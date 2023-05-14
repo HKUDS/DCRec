@@ -42,6 +42,11 @@ class CLLayer(torch.nn.Module):
         z1 = fn.normalize(z1)
         z2 = fn.normalize(z2)
         return torch.mm(z1, z2.t())
+    
+    def pair_sim(self, z1, z2):
+        z1 = fn.normalize(z1)
+        z2 = fn.normalize(z2)
+        return torch.sum(z1*z2, dim=1)
 
     def semi_loss(self, z1: torch.Tensor, z2: torch.Tensor):
         f = lambda x: torch.exp(x / self.tau)
@@ -78,6 +83,12 @@ class CLLayer(torch.nn.Module):
         f = lambda x: torch.exp(x / self.tau)
         pos_pairs = f(self.sim(z1, z2)).diag()
         neg_pairs = f(self.sim(z1, z2)).sum(1)
+        return -torch.log(1e-8 + pos_pairs / neg_pairs)
+
+    def vanilla_loss_overall(self, z1, z2, z_2_all):
+        f = lambda x: torch.exp(x / self.tau)
+        pos_pairs = f(self.pair_sim(z1, z2))
+        neg_pairs = f(self.sim(z1, z_2_all)).sum(1)
         return -torch.log(pos_pairs / neg_pairs)
     
     def vanilla_loss_with_one_negative(self, z1: torch.Tensor, z2: torch.Tensor):

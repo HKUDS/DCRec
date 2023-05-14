@@ -28,7 +28,7 @@ def _convert_to_tensor(data):
         torch.Tensor: Converted tensor from `data`.
     """
     elem = data[0]
-    if isinstance(elem, (float, int, np.float, np.int64)):
+    if isinstance(elem, (float, int, np.float64, np.int64)):
         new_data = torch.as_tensor(data)
     elif isinstance(elem, (list, tuple, pd.Series, np.ndarray, torch.Tensor)):
         seq_data = [torch.as_tensor(d) for d in data]

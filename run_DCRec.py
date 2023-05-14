@@ -256,7 +256,8 @@ if __name__ == '__main__':
         config_dict['train_batch_size'] = 512
 
         if args.dataset == "beauty":
-            config_dict["attn_dropout_prob"]  = 0.1
+            config_dict["schedule_step"] = 30
+            config_dict["attn_dropout_prob"] = 0.1
             config_dict['train_batch_size'] = 2048
             config_dict["sim_group"] = 4
             config_dict["weight_mean"] = 0.5

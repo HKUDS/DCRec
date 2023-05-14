@@ -14,6 +14,20 @@ from recbole.model.layers import TransformerEncoder, CLLayer
 import dgl
 from dgl.nn.pytorch import GraphConv
 
+def cal_kl(target, input):
+    ### log with sigmoid
+    target = torch.sigmoid(target)
+    input = torch.sigmoid(input)
+    target = torch.log(target + 1e-8)
+    input = torch.log(input + 1e-8)
+    return F.kl_div(input, target, reduction='batchmean', log_target=True)
+
+def cal_kl_1(target, input):
+    target[target<1e-8] = 1e-8
+    target = torch.log(target + 1e-8)
+    input = torch.log_softmax(input + 1e-8, dim=0)
+    return F.kl_div(input, target, reduction='batchmean', log_target=True)
+
 
 def graph_dual_neighbor_readout(g: dgl.DGLGraph, aug_g: dgl.DGLGraph, node_ids, features):
     _, all_neighbors = g.out_edges(node_ids)
@@ -98,9 +112,10 @@ class GCN(nn.Module):
         super(GCN, self).__init__()
         self.dropout_prob = dropout_prob
         self.layer = GraphConv(in_dim, out_dim, weight=False,
-                               bias=False, allow_zero_in_degree=True)
+                               bias=False, allow_zero_in_degree=False)
 
     def forward(self, graph, feature):
+        graph = dgl.add_self_loop(graph)
         origin_w, graph = graph_dropout(graph, 1-self.dropout_prob)
         embs = [feature]
         for i in range(2):
@@ -351,20 +366,45 @@ class DCRec(SequentialRecommender):
         # filtering those len=1, set weight=0.5
         mainstream_weights[item_seq_len == 1] = 0.5
 
-        expected_weights_distribution = torch.normal(
-            self.config["weight_mean"], 0.1, size=mainstream_weights.size()).sort()[0].to(self.device)
-        kl_loss = self.config["kl_weight"] * F.kl_div(F.log_softmax(
-            mainstream_weights, dim=0).sort()[0], expected_weights_distribution, reduction="batchmean")
+        expected_weights_distribution = torch.normal(self.config["weight_mean"], 0.1, size=mainstream_weights.size()).to(self.device)
+        # kl_loss = self.config["kl_weight"] * cal_kl(expected_weights_distribution.sort()[0], mainstream_weights.sort()[0])
+
+        # apply log_softmax for input
+        kl_loss = self.config["kl_weight"] * cal_kl_1(expected_weights_distribution.sort()[0], mainstream_weights.sort()[0])
+
+        if torch.isnan(kl_loss):
+            logging.info("kl_loss: {}".format(kl_loss))
+            logging.info("mainstream_weights: {}".format(
+                mainstream_weights.cpu().tolist()))
+            logging.info("expected_weights_distribution: {}".format(
+                expected_weights_distribution.cpu().tolist()))
+            raise ValueError("kl loss is nan")
+
         personlization_weights = mainstream_weights.max() - mainstream_weights
 
         # contrastive learning
         if self.config["cl_ablation"] == "full":
-            cl_loss_adj = self.contrastive_learning_layer.grace_loss(
+            # cl_loss_adj = self.contrastive_learning_layer.grace_loss(
+            #     aug_seq_output, iadj_graph_output_seq)
+            # cl_loss_a2s = self.contrastive_learning_layer.grace_loss(
+            #     iadj_graph_output_seq, isim_graph_output_seq)
+            # cl_loss_adj = self.contrastive_learning_layer.vanilla_loss_overall(
+            #     aug_seq_output, iadj_graph_output_seq, iadj_graph_output_raw)
+            # cl_loss_a2s = self.contrastive_learning_layer.vanilla_loss_overall(
+            #     iadj_graph_output_seq, isim_graph_output_seq, isim_graph_output_raw)
+            cl_loss_adj = self.contrastive_learning_layer.vanilla_loss(
                 aug_seq_output, iadj_graph_output_seq)
-            cl_loss_a2s = self.contrastive_learning_layer.grace_loss(
+            cl_loss_a2s = self.contrastive_learning_layer.vanilla_loss(
                 iadj_graph_output_seq, isim_graph_output_seq)
             cl_loss = (self.config["graphcl_coefficient"] * (mainstream_weights *
                        cl_loss_adj + personlization_weights * cl_loss_a2s)).mean()
+            if torch.isnan(cl_loss):
+                logging.error("cl_loss_adj: {}".format(cl_loss_adj.cpu().tolist()))
+                logging.error("cl_loss_a2s: {}".format(cl_loss_a2s.cpu().tolist()))
+                logging.error("mainstream_weights: {}".format(mainstream_weights.cpu().tolist()))
+                logging.error("personlization_weights: {}".format(personlization_weights.cpu().tolist()))
+                logging.error("cl loss is nan")
+                raise ValueError("cl loss is nan")
         # Fusion After CL
         if self.config["graph_view_fusion"]:
             # 3, N_mask, dim
@@ -378,9 +418,10 @@ class DCRec(SequentialRecommender):
         # [item_num, H]
         test_item_emb = self.item_embedding.weight
         logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
-        loss = self.loss_fct(logits, pos_items)
+        loss = self.loss_fct(logits+1e-8, pos_items)
 
         if torch.isnan(loss):
+            logging.error("cl_loss: {}".format(cl_loss))
             logging.error("loss is nan")
         return loss, cl_loss, kl_loss
 
